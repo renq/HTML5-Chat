@@ -15,7 +15,6 @@ $users = array();
 while(true){
 	$changed = $websocket->getSockets();
 	socket_select($changed, $write=NULL, $except=NULL, NULL);
-	print_r($changed);
 	foreach($changed as $s){
 		if ($s == $socket) {
 			$client = socket_accept($s);
@@ -43,10 +42,11 @@ while(true){
 		        $user = $users[(string)$s];
 		        
 		        if ($user->getHandshaked()) {
-		        	//socket_write($s, $buffer, strlen($buffer));
 		        	foreach ($websocket->getSockets() as $userSocket) {
-		        		$response = "$buffer\0";
-		        		socket_write($userSocket, $response, strlen($response));
+		        		if ($userSocket != $socket) {
+			        		$response = "$buffer\0";
+			        		socket_write($userSocket, $response, strlen($response));
+		        		}
 		        	}
 		        }
 		        else {
@@ -61,30 +61,60 @@ while(true){
 
 
 
-function parseHeaders($headers) {
-	$arr = explode("\r\n", $headers);
-	$method = array_shift($arr);
+class Header {
 	
-	$methodArr = explode(' ', $method);
+	private $header;
+	private $parsed = array(); 
 	
-	$params = array();
 	
-	foreach ($arr as $header) {
-		if ($header) {
-			$tmp = explode(':', $header);
-			$key = array_shift($tmp);
-			$params[$key] = trim(implode(':', $tmp));
-		}
-		else {
-			break;
-		}
+	public function __construct($header) {
+		$this->header = $header;
+		$this->parse();
 	}
-	return array(
-		'method' => $method,
-		'resource' => $methodArr[1],
-		'params' => $params,
-		'msg' => array_pop($arr),
-	);
+	
+		
+	public function parse() {
+		$arr = explode("\r\n", $this->header);
+		$method = array_shift($arr);
+		
+		$methodArr = explode(' ', $method);
+		$params = array();
+		
+		foreach ($arr as $header) {
+			if ($header) {
+				$tmp = explode(':', $header);
+				$key = array_shift($tmp);
+				$params[$key] = trim(implode(':', $tmp));
+			}
+			else {
+				break;
+			}
+		}
+		
+		$this->parsed = array(
+			'method' => $method,
+			'resource' => $methodArr[1],
+			'params' => $params,
+			'msg' => array_pop($arr),
+		);
+	}
+	
+	
+	public function getResource() {
+		return $this->parsed['resource'];
+	}
+	
+	
+	public function getParams() {
+		return $this->parsed['params'];
+	}
+	
+	
+	public function getMessage() {
+		return $this->parsed['msg'];
+	}
+	
+	
 }
 
 
@@ -124,6 +154,8 @@ class WebSocket {
 	private $address;
 	private $port;
 	
+	public $debug = true;
+	
 	
 	public function __construct($address, $port) {
 		$this->address = $address;
@@ -136,16 +168,21 @@ class WebSocket {
 		
 		$this->addSocket($this->socket);	
 		
-		echo "Server created : ".date('Y-m-d H:i:s')."\n";
-		echo "Socket         : ".$this->socket."\n";
-		echo "Listening on   : ".$this->address." port ".$this->port."\n\n";
+		$this->debug('Server created');
+		$this->debug("Listening on {$this->address}, port {$this->port}");
 				
 	}
 	
 	
+	public function debug($msg) {
+		echo date('Y-m-d H:i:s ') . $msg . "\n";
+	}
+	
+	
 	public function getHandshake($buffer) {
-	    $parsed = parseHeaders($buffer);
-        $params = $parsed['params'];
+		$header = new Header($buffer);
+        $params = $header->getParams();;
+        
         if (isset($params['Sec-WebSocket-Key'])) {
         	echo "draft-ietf-hybi-thewebsocketprotocol-06\n";
 	        echo $acceptKey = base64_encode(sha1($params['Sec-WebSocket-Key'] . "258EAFA5-E914-47DA-95CA-C5AB0DC85B11", true));
@@ -166,13 +203,13 @@ class WebSocket {
 			$replacement = '';
 			$spaces1 = strlen(preg_replace($pattern, $replacement, $params['Sec-WebSocket-Key1']));
 			$spaces2 = strlen(preg_replace($pattern, $replacement, $params['Sec-WebSocket-Key2']));
-			$hashData = md5( pack("N", $numkey1/$spaces1) . pack("N", $numkey2/$spaces2) . $parsed['msg'], true);
+			$hashData = md5( pack("N", $numkey1/$spaces1) . pack("N", $numkey2/$spaces2) . $header->getMessage(), true);
         	
 			$response = "HTTP/1.1 101 WebSocket Protocol Handshake\r\n";
 			$response .= "Upgrade: WebSocket\r\n";
 			$response .= "Connection: Upgrade\r\n";
 			$response .= "Sec-WebSocket-Origin: " . $params['Origin'] . "\r\n";
-			$response .= "Sec-WebSocket-Location: ws://" . "{$this->address}:{$this->port}" . $parsed['resource'] . "\r\n";
+			$response .= "Sec-WebSocket-Location: ws://" . "{$this->address}:{$this->port}" . $header->getResource() . "\r\n";
 			$response .= "\r\n";
 			$response .= $hashData;
 			$response .= "\0";
